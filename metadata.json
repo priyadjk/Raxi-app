@@ -1,0 +1,5 @@
+{
+  "name": "Raxi Chat",
+  "description": "A next-generation AI chat interface featuring real-time web grounding, code highlighting, and a sleek, responsive design powered by Gemini 2.5 Flash.",
+  "requestFramePermissions": []
+}

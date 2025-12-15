@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Message, Source } from '../types';
-import { sendMessageStream, resetChat } from '../services/geminiService';
+import { sendMessageStream, resetChat, ImageAttachment } from '../services/geminiService';
 import { Icons } from '../constants';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { SourceList } from './SourceList';
@@ -23,9 +23,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ sidebarOpen, toggleSidebar }
   const [isLoading, setIsLoading] = useState(false);
   const [selectedModel, setSelectedModel] = useState(AVAILABLE_MODELS[0]);
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
+  const [selectedImages, setSelectedImages] = useState<ImageAttachment[]>([]);
+  const [isListening, setIsListening] = useState(false);
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const recognitionRef = useRef<any>(null);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -55,17 +60,85 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ sidebarOpen, toggleSidebar }
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Image Upload Handler
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64String = reader.result as string;
+        // Remove data URL prefix (e.g., "data:image/jpeg;base64,") for SDK
+        const base64Data = base64String.split(',')[1];
+        
+        setSelectedImages(prev => [...prev, {
+            data: base64Data,
+            mimeType: file.type
+        }]);
+      };
+      reader.readAsDataURL(file);
+    }
+    // Reset input so same file can be selected again
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const removeImage = (index: number) => {
+    setSelectedImages(prev => prev.filter((_, i) => i !== index));
+  };
+
+  // Microphone Handler
+  const toggleListening = () => {
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+    } else {
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        alert("Speech recognition is not supported in this browser.");
+        return;
+      }
+      
+      const recognition = new SpeechRecognition();
+      recognition.lang = 'en-US';
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      
+      recognition.onstart = () => setIsListening(true);
+      recognition.onend = () => setIsListening(false);
+      recognition.onresult = (event: any) => {
+        const transcript = event.results[0][0].transcript;
+        setInput(prev => prev + (prev ? ' ' : '') + transcript);
+      };
+      
+      recognitionRef.current = recognition;
+      recognition.start();
+    }
+  };
+
+  // Flowchart Generator Helper
+  const handleFlowchartRequest = () => {
+      const prefix = "Generate a flowchart using mermaid.js syntax for: ";
+      if (!input.includes(prefix)) {
+          setInput(prefix + input);
+          if (textareaRef.current) textareaRef.current.focus();
+      }
+  };
+
   const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
+    if ((!input.trim() && selectedImages.length === 0) || isLoading) return;
 
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content: input.trim()
+      content: input.trim(),
+      // Store images in message for display (optional, simplified here to just text)
     };
 
     setMessages(prev => [...prev, userMessage]);
+    
+    // Clear inputs
+    const currentImages = [...selectedImages];
     setInput('');
+    setSelectedImages([]);
     setIsLoading(true);
 
     // Reset textarea height
@@ -83,7 +156,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ sidebarOpen, toggleSidebar }
       sources: []
     }]);
 
-    await sendMessageStream(userMessage.content, {
+    await sendMessageStream(userMessage.content, currentImages, {
       onChunk: (text) => {
         setMessages(prev => prev.map(msg => 
           msg.id === aiMessageId 
@@ -249,26 +322,88 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ sidebarOpen, toggleSidebar }
                  </div>
             )}
 
-          <div className="relative group bg-[#303030] border border-gray-600/50 focus-within:border-gray-500 rounded-3xl shadow-2xl overflow-hidden transition-all duration-200">
+            {/* Image Preview */}
+            {selectedImages.length > 0 && (
+                <div className="flex gap-2 mb-2 overflow-x-auto p-1">
+                    {selectedImages.map((img, idx) => (
+                        <div key={idx} className="relative group">
+                            <img 
+                                src={`data:${img.mimeType};base64,${img.data}`} 
+                                alt="upload" 
+                                className="h-16 w-16 object-cover rounded-lg border border-gray-600"
+                            />
+                            <button 
+                                onClick={() => removeImage(idx)}
+                                className="absolute -top-1 -right-1 bg-black/70 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                                <Icons.Close />
+                            </button>
+                        </div>
+                    ))}
+                </div>
+            )}
+
+          <div className="relative group bg-[#303030] border border-gray-600/50 focus-within:border-gray-500 rounded-3xl shadow-2xl transition-all duration-200 flex flex-col">
             <textarea
               ref={textareaRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={`Message ${selectedModel.name}...`}
-              className="w-full max-h-[200px] py-4 pl-4 pr-12 bg-transparent text-gray-200 placeholder-gray-400 focus:outline-none resize-none leading-relaxed custom-scrollbar"
+              className="w-full max-h-[200px] py-4 pl-12 pr-12 bg-transparent text-gray-200 placeholder-gray-400 focus:outline-none resize-none leading-relaxed custom-scrollbar min-h-[56px]"
               rows={1}
             />
-            <button
-              onClick={handleSend}
-              disabled={!input.trim() || isLoading}
-              className={`absolute bottom-3 right-3 p-2 rounded-full transition-all duration-200 
-                ${input.trim() && !isLoading 
-                  ? 'bg-white text-black hover:bg-gray-200' 
-                  : 'bg-gray-600 text-gray-400 cursor-not-allowed'}`}
-            >
-              <Icons.Send />
-            </button>
+            
+            {/* Toolbar Icons inside Input Area */}
+            <div className="absolute left-3 top-3.5 flex items-center gap-1.5">
+                 {/* Image Upload */}
+                 <button 
+                    onClick={() => fileInputRef.current?.click()}
+                    className="p-1.5 text-gray-400 hover:text-yellow-400 transition-colors rounded-lg hover:bg-white/5"
+                    title="Upload Image"
+                 >
+                    <Icons.Photo />
+                    <input 
+                        type="file" 
+                        ref={fileInputRef} 
+                        className="hidden" 
+                        accept="image/*"
+                        onChange={handleFileSelect}
+                    />
+                 </button>
+            </div>
+
+            <div className="absolute right-3 bottom-3 flex items-center gap-2">
+                 {/* Flowchart Generation */}
+                 <button 
+                    onClick={handleFlowchartRequest}
+                    className="p-2 text-gray-400 hover:text-yellow-400 transition-colors rounded-full hover:bg-white/5"
+                    title="Generate Flowchart"
+                 >
+                    <Icons.FlowChart />
+                 </button>
+
+                 {/* Microphone */}
+                 <button 
+                    onClick={toggleListening}
+                    className={`p-2 rounded-full transition-all ${isListening ? 'text-yellow-400 bg-yellow-400/10 animate-pulse' : 'text-gray-400 hover:text-white'}`}
+                    title="Voice Input"
+                 >
+                    <Icons.Microphone />
+                 </button>
+
+                 {/* Send Button */}
+                 <button
+                    onClick={handleSend}
+                    disabled={(!input.trim() && selectedImages.length === 0) || isLoading}
+                    className={`p-2 rounded-full transition-all duration-200 
+                        ${(input.trim() || selectedImages.length > 0) && !isLoading 
+                        ? 'bg-white text-black hover:bg-gray-200' 
+                        : 'bg-gray-600 text-gray-400 cursor-not-allowed'}`}
+                    >
+                    <Icons.Send />
+                </button>
+            </div>
           </div>
           <div className="text-center mt-3">
              <p className="text-[11px] text-gray-500">Raxi Chat can make mistakes. Check important info.</p>

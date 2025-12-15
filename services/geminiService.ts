@@ -15,6 +15,11 @@ export interface StreamCallbacks {
   onError: (error: Error) => void;
 }
 
+export interface ImageAttachment {
+    data: string; // Base64
+    mimeType: string;
+}
+
 let chatInstance: Chat | null = null;
 
 export const resetChat = () => {
@@ -23,6 +28,7 @@ export const resetChat = () => {
 
 export const sendMessageStream = async (
   message: string,
+  images: ImageAttachment[] | undefined,
   callbacks: StreamCallbacks
 ) => {
   try {
@@ -38,7 +44,22 @@ export const sendMessageStream = async (
       });
     }
 
-    const result = await chatInstance.sendMessageStream({ message });
+    let msgParam: string | any[] = message;
+
+    if (images && images.length > 0) {
+        msgParam = [
+            ...images.map(img => ({
+                inlineData: {
+                    mimeType: img.mimeType,
+                    data: img.data
+                }
+            })),
+            { text: message || " " } // Ensure there is text if passing parts
+        ];
+    }
+
+    // @ts-ignore - The SDK definition might be strict about 'string' but it usually accepts Part[] at runtime for multimodal
+    const result = await chatInstance.sendMessageStream({ message: msgParam });
 
     let fullText = '';
 
